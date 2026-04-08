@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+logs/
+polybot.db
+polybot.db-journal
+polybot.db-wal
+polybot.db-shm
+.DS_Store
+Thumbs.db
