@@ -3,27 +3,27 @@
   "configurations": [
     {
       "name": "dashboard",
-      "runtimeExecutable": "C:\\Users\\pautapia\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "runtimeExecutable": "C:\\Users\\pauta\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
       "runtimeArgs": ["dashboard.py"],
       "port": 5000
     },
     {
       "name": "bot",
-      "runtimeExecutable": "C:\\Users\\pautapia\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "runtimeExecutable": "C:\\Users\\pauta\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
       "runtimeArgs": ["bot.py"],
       "port": null,
       "autoPort": true
     },
     {
       "name": "collector",
-      "runtimeExecutable": "C:\\Users\\pautapia\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "runtimeExecutable": "C:\\Users\\pauta\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
       "runtimeArgs": ["collector.py"],
       "port": null,
       "autoPort": true
     },
     {
       "name": "tracker",
-      "runtimeExecutable": "C:\\Users\\pautapia\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "runtimeExecutable": "C:\\Users\\pauta\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
       "runtimeArgs": ["trader_tracker.py"],
       "port": null,
       "autoPort": true

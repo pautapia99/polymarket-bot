@@ -6,7 +6,7 @@ REM Para parar:  taskkill /F /IM pythonw.exe
 REM (cuidado: mata cualquier pythonw.exe del sistema)
 REM ============================================================
 
-set PYWEXE=C:\Users\pautapia\AppData\Local\Programs\Python\Python312\pythonw.exe
+set PYWEXE=C:\Users\pauta\AppData\Local\Programs\Python\Python312\pythonw.exe
 set BASE=%~dp0
 
 if not exist "%BASE%logs" mkdir "%BASE%logs"

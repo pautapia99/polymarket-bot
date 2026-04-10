@@ -4,12 +4,15 @@
       "Bash(curl -s -o /tmp/r.json -w 'HTTP %{http_code}\\\\n' https://lb-api.polymarket.com/profit__TRACKED_VAR__)",
       "Read(//tmp/**)",
       "Bash(curl -s 'https://lb-api.polymarket.com/profit?window=__TRACKED_VAR__&limit=10' -o /tmp/r.json)",
-      "Bash(/c/Users/pautapia/AppData/Local/Programs/Python/Python312/python.exe -c ':*)",
+      "Bash(/c/Users/pauta/AppData/Local/Programs/Python/Python312/python.exe -c ':*)",
       "mcp__Claude_Preview__preview_start",
       "Bash(gh --version)",
       "Bash(gh auth:*)",
       "Bash(git --version)",
-      "Bash(git config:*)"
+      "Bash(git config:*)",
+      "Bash(grep -r \"C:\\\\\\\\Users\" --include=\"*.py\" --include=\"*.bat\" --include=\"*.json\" .)",
+      "Bash(where python:*)",
+      "Bash(where python3:*)"
     ]
   }
 }

@@ -5,7 +5,7 @@ REM Cada servicio en su propia ventana para que veas los logs.
 REM Para parar uno, cierra su ventana (X) o pulsa Ctrl+C dentro.
 REM ============================================================
 
-set PYEXE=C:\Users\pautapia\AppData\Local\Programs\Python\Python312\python.exe
+set PYEXE=C:\Users\pauta\AppData\Local\Programs\Python\Python312\python.exe
 set BASE=%~dp0
 
 start "polybot-dashboard" cmd /k "cd /d %BASE% && %PYEXE% dashboard.py"
