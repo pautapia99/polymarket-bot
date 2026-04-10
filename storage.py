@@ -114,6 +114,40 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_tt_wallet_ts ON tracked_trades(wallet, ts);
             CREATE INDEX IF NOT EXISTS idx_tt_ts ON tracked_trades(ts);
+
+            CREATE TABLE IF NOT EXISTS trader_stats (
+                wallet TEXT PRIMARY KEY,
+                pseudonym TEXT,
+                win_rate REAL NOT NULL DEFAULT 0.5,
+                avg_profit_pct REAL NOT NULL DEFAULT 0,
+                trades_analyzed INTEGER NOT NULL DEFAULT 0,
+                pairs_found INTEGER NOT NULL DEFAULT 0,
+                weight REAL NOT NULL DEFAULT 0.3,
+                updated_ts REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_trstats_weight ON trader_stats(weight);
+
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                slug TEXT,
+                outcome TEXT,
+                title TEXT,
+                side TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                avg_price REAL NOT NULL,
+                traders_count INTEGER NOT NULL,
+                traders_json TEXT,
+                reason TEXT,
+                phase INTEGER NOT NULL DEFAULT 1,
+                acted INTEGER NOT NULL DEFAULT 0,
+                outcome_price REAL,
+                pnl_pct REAL,
+                closed_ts REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
+            CREATE INDEX IF NOT EXISTS idx_signals_asset ON signals(asset, ts);
             """
         )
 
@@ -319,6 +353,162 @@ def fetch_tracker_stats() -> dict:
         "last_trade_ts": last,
         "first_lb_ts": first_lb,
         "last_lb_ts": last_lb,
+    }
+
+
+# ---------- trader_stats (learner) ----------
+
+def upsert_trader_stats_batch(stats: list[dict]):
+    now = time.time()
+    with _conn() as con:
+        for s in stats:
+            con.execute(
+                """INSERT INTO trader_stats
+                       (wallet, pseudonym, win_rate, avg_profit_pct,
+                        trades_analyzed, pairs_found, weight, updated_ts)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(wallet) DO UPDATE SET
+                       pseudonym=excluded.pseudonym,
+                       win_rate=excluded.win_rate,
+                       avg_profit_pct=excluded.avg_profit_pct,
+                       trades_analyzed=excluded.trades_analyzed,
+                       pairs_found=excluded.pairs_found,
+                       weight=excluded.weight,
+                       updated_ts=excluded.updated_ts""",
+                (
+                    s["wallet"], s.get("pseudonym"),
+                    s["win_rate"], s["avg_profit_pct"],
+                    s["trades_analyzed"], s["pairs_found"],
+                    s["weight"], now,
+                ),
+            )
+
+
+def get_trader_weights() -> dict:
+    """Devuelve {wallet: weight} para todos los traders con estadísticas."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT wallet, weight FROM trader_stats"
+        ).fetchall()
+    return {r["wallet"]: r["weight"] for r in rows}
+
+
+def fetch_trader_stats(limit: int = 30) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT * FROM trader_stats
+               ORDER BY weight DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_autonomy_phase() -> tuple:
+    """
+    Devuelve (phase_num, phase_name) según los datos acumulados.
+      Fase 1 – COPIA     : < 100 pares analizados
+      Fase 2 – HÍBRIDO   : 100-500 pares
+      Fase 3 – AUTÓNOMO  : > 500 pares Y avg_win_rate > 55%
+    """
+    with _conn() as con:
+        row = con.execute(
+            "SELECT SUM(trades_analyzed) AS total, AVG(win_rate) AS avg_wr "
+            "FROM trader_stats"
+        ).fetchone()
+        total = row["total"] or 0
+        avg_wr = row["avg_wr"] or 0.5
+
+        age_row = con.execute(
+            "SELECT MIN(ts) AS first_ts FROM tracked_trades"
+        ).fetchone()
+        first_ts = age_row["first_ts"] or time.time()
+        days = (time.time() - first_ts) / 86400
+
+    if total >= 500 and days >= 30 and avg_wr > 0.55:
+        return 3, "AUTÓNOMO"
+    elif total >= 100 and days >= 7:
+        return 2, "HÍBRIDO"
+    else:
+        return 1, "COPIA"
+
+
+# ---------- signals ----------
+
+def insert_signal(
+    asset: str, slug, outcome, title, side: str,
+    confidence: float, avg_price: float,
+    traders_count: int, traders_json: str, reason: str, phase: int,
+) -> int:
+    with _conn() as con:
+        cur = con.execute(
+            """INSERT INTO signals
+                   (ts, asset, slug, outcome, title, side, confidence,
+                    avg_price, traders_count, traders_json, reason, phase)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                time.time(), asset, slug, outcome, title, side,
+                confidence, avg_price, traders_count, traders_json, reason, phase,
+            ),
+        )
+        return cur.lastrowid
+
+
+def mark_signal_acted(signal_id: int):
+    with _conn() as con:
+        con.execute("UPDATE signals SET acted=1 WHERE id=?", (signal_id,))
+
+
+def update_signal_outcome(signal_id: int, outcome_price: float, pnl_pct: float):
+    with _conn() as con:
+        con.execute(
+            "UPDATE signals SET outcome_price=?, pnl_pct=?, closed_ts=? WHERE id=?",
+            (outcome_price, pnl_pct, time.time(), signal_id),
+        )
+
+
+def get_recent_tracked_trades_since(cutoff_ts: float) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT tt.*, ts2.weight AS trader_weight
+               FROM tracked_trades tt
+               LEFT JOIN trader_stats ts2 ON ts2.wallet = tt.wallet
+               WHERE tt.ts >= ?
+               ORDER BY tt.ts DESC""",
+            (cutoff_ts,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_recent_signals(limit: int = 20) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM signals ORDER BY ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_signal_stats() -> dict:
+    with _conn() as con:
+        total = con.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+        acted = con.execute(
+            "SELECT COUNT(*) FROM signals WHERE acted=1"
+        ).fetchone()[0]
+        evaluated = con.execute(
+            "SELECT COUNT(*) FROM signals WHERE pnl_pct IS NOT NULL"
+        ).fetchone()[0]
+        avg_pnl = con.execute(
+            "SELECT AVG(pnl_pct) FROM signals WHERE pnl_pct IS NOT NULL"
+        ).fetchone()[0]
+        wins = con.execute(
+            "SELECT COUNT(*) FROM signals WHERE pnl_pct > 0"
+        ).fetchone()[0]
+    return {
+        "total": total,
+        "acted": acted,
+        "evaluated": evaluated,
+        "avg_pnl_pct": avg_pnl,
+        "wins": wins,
+        "win_rate": round(wins / evaluated, 3) if evaluated else None,
     }
 
 

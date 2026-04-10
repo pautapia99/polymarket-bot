@@ -72,6 +72,46 @@ INDEX_HTML = """
   <div class="card"><h3>—</h3><div class="v mut">&nbsp;</div></div>
 </div>
 
+<div class="grid">
+  <div class="card" style="grid-column:span 4;background:#0a1a10;border-color:#1b3d22;">
+    <h3 style="color:#3ddc97;margin:0 0 12px;">🧠 Bot Inteligente</h3>
+    <div style="display:flex;gap:40px;align-items:center;flex-wrap:wrap;">
+      <div><div style="font-size:11px;color:#8a93b2;text-transform:uppercase;margin-bottom:4px;">Fase de autonomía</div>
+           <div class="v pos" id="aiPhase" style="font-size:26px;">—</div></div>
+      <div><div style="font-size:11px;color:#8a93b2;text-transform:uppercase;margin-bottom:4px;">Pares analizados</div>
+           <div class="v mut" id="aiPairs">—</div></div>
+      <div><div style="font-size:11px;color:#8a93b2;text-transform:uppercase;margin-bottom:4px;">Win rate medio</div>
+           <div class="v" id="aiWinRate">—</div></div>
+      <div><div style="font-size:11px;color:#8a93b2;text-transform:uppercase;margin-bottom:4px;">Señales generadas</div>
+           <div class="v mut" id="aiSigTotal">—</div></div>
+      <div><div style="font-size:11px;color:#8a93b2;text-transform:uppercase;margin-bottom:4px;">Win rate señales</div>
+           <div class="v" id="aiSigWr">—</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="chart-wrap">
+  <div class="chart-card">
+    <h3 style="margin:0 0 12px;color:#8a93b2;">🎯 Señales recientes del motor</h3>
+    <table id="signalsTbl">
+      <thead><tr><th>Hora</th><th>Side</th><th>Confianza</th><th>Precio</th>
+                 <th>Traders</th><th>Fase</th><th>Mercado</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="chart-wrap">
+  <div class="chart-card">
+    <h3 style="margin:0 0 12px;color:#8a93b2;">⚖️ Pesos aprendidos por trader</h3>
+    <table id="traderStatsTbl">
+      <thead><tr><th>Trader</th><th>Win Rate</th><th>Profit medio</th>
+                 <th>Pares</th><th>Peso</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
 <div class="chart-wrap">
   <div class="chart-card">
     <h3 style="margin:0 0 12px;color:#8a93b2;">Trades recientes de top traders</h3>
@@ -118,13 +158,15 @@ function fmt(v, d=3){ return v==null ? "—" : Number(v).toFixed(d); }
 function fmtTs(ts){ return new Date(ts*1000).toLocaleTimeString(); }
 
 async function refresh(){
-  const [stats, ticks, orders, paper, coll, trk] = await Promise.all([
+  const [stats, ticks, orders, paper, coll, trk, lrn, sigs] = await Promise.all([
     fetch('/api/stats').then(r=>r.json()),
     fetch('/api/ticks').then(r=>r.json()),
     fetch('/api/orders').then(r=>r.json()),
     fetch('/api/paper').then(r=>r.json()),
     fetch('/api/collector').then(r=>r.json()),
     fetch('/api/tracker').then(r=>r.json()),
+    fetch('/api/learner').then(r=>r.json()),
+    fetch('/api/signals').then(r=>r.json()),
   ]);
 
   document.getElementById('cRows').textContent = (coll.rows||0).toLocaleString();
@@ -140,6 +182,60 @@ async function refresh(){
   document.getElementById('tTrades').textContent = (ts.tracked_trades || 0).toLocaleString();
   document.getElementById('tLast').textContent = ts.last_trade_ts
     ? fmtTs(ts.last_trade_ts) : '—';
+
+  // ── Bot Inteligente ──
+  const ph = lrn.phase || {};
+  document.getElementById('aiPhase').textContent =
+    ph.num ? `Fase ${ph.num} – ${ph.name}` : '—';
+  document.getElementById('aiPairs').textContent =
+    (lrn.total_pairs || 0).toLocaleString();
+  const wr = lrn.avg_win_rate;
+  const wrEl = document.getElementById('aiWinRate');
+  wrEl.textContent = wr != null ? (wr*100).toFixed(1)+'%' : '—';
+  wrEl.className = 'v ' + (wr>0.55?'pos':wr<0.45?'neg':'mut');
+  document.getElementById('aiSigTotal').textContent =
+    (lrn.signal_stats?.total || 0).toLocaleString();
+  const swr = lrn.signal_stats?.win_rate;
+  const swrEl = document.getElementById('aiSigWr');
+  swrEl.textContent = swr != null ? (swr*100).toFixed(1)+'%' : '—';
+  swrEl.className = 'v ' + (swr>0.55?'pos':swr<0.45?'neg':'mut');
+
+  // ── Señales recientes ──
+  const sigBody = document.querySelector('#signalsTbl tbody');
+  sigBody.innerHTML = (sigs.recent || []).map(s => {
+    const sc = s.side === 'BUY' ? 'buy' : 'sell';
+    const confPct = ((s.confidence||0)*100).toFixed(0)+'%';
+    const bar = `<div style="display:inline-block;width:${confPct};height:6px;
+      background:${s.side==='BUY'?'#3ddc97':'#ff6b6b'};border-radius:3px;
+      vertical-align:middle;margin-right:6px;"></div>`;
+    return `<tr>
+      <td>${fmtTs(s.ts)}</td>
+      <td class="${sc}">${s.side}</td>
+      <td>${bar}${confPct}</td>
+      <td>${fmt(s.avg_price,3)}</td>
+      <td>${s.traders_count}</td>
+      <td><span class="badge">${s.phase}</span></td>
+      <td>${(s.title||s.slug||'').substring(0,55)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" class="mut">Sin señales aún</td></tr>';
+
+  // ── Pesos aprendidos ──
+  const tsBody = document.querySelector('#traderStatsTbl tbody');
+  tsBody.innerHTML = (lrn.top_traders || []).map(t => {
+    const name = (t.pseudonym||t.wallet||'').substring(0,20);
+    const wrCls = t.win_rate>0.55?'pos':t.win_rate<0.45?'neg':'mut';
+    const barW = Math.round((t.weight||0)*100);
+    const weightBar = `<div style="display:inline-block;width:${barW}px;height:6px;
+      background:#3ddc97;border-radius:3px;vertical-align:middle;margin-right:6px;
+      max-width:80px;"></div>`;
+    return `<tr>
+      <td>${name}</td>
+      <td class="${wrCls}">${((t.win_rate||0)*100).toFixed(1)}%</td>
+      <td>${((t.avg_profit_pct||0)*100).toFixed(2)}%</td>
+      <td>${t.trades_analyzed||0}</td>
+      <td>${weightBar}${(t.weight||0).toFixed(3)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="mut">Learner acumulando datos...</td></tr>';
 
   const trBody = document.querySelector('#tracksTbl tbody');
   trBody.innerHTML = (trk.recent || []).map(t => {
@@ -286,6 +382,33 @@ def api_tracker():
     return jsonify({
         "stats": storage.fetch_tracker_stats(),
         "recent": storage.fetch_recent_tracked_trades(limit=20),
+    })
+
+
+@app.route("/api/learner")
+def api_learner():
+    import sqlite3
+    stats = storage.fetch_trader_stats(limit=20)
+    sig_stats = storage.fetch_signal_stats()
+    phase, phase_name = storage.get_autonomy_phase()
+    total_pairs = sum(s.get("trades_analyzed", 0) for s in stats)
+    avg_wr = (
+        sum(s["win_rate"] for s in stats) / len(stats) if stats else None
+    )
+    return jsonify({
+        "phase": {"num": phase, "name": phase_name},
+        "total_pairs": total_pairs,
+        "avg_win_rate": round(avg_wr, 4) if avg_wr is not None else None,
+        "top_traders": stats,
+        "signal_stats": sig_stats,
+    })
+
+
+@app.route("/api/signals")
+def api_signals():
+    return jsonify({
+        "recent": storage.fetch_recent_signals(limit=15),
+        "stats":  storage.fetch_signal_stats(),
     })
 
 
