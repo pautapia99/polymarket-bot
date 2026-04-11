@@ -141,7 +141,11 @@ def act_on_signals(client, broker: PaperBroker, cfg: Config) -> None:
         log.info("Sin señales nuevas este ciclo.")
         return
 
-    max_pos   = float(os.getenv("MAX_POSITION_USDC", str(cfg.order_size_usdc * 3)))
+    # Máximo por operación: el menor entre MAX_POSITION_USDC y el 10% del cash
+    # disponible. Así nunca se queda sin dinero por una sola compra.
+    cash_now  = broker.cash()
+    hard_cap  = float(os.getenv("MAX_POSITION_USDC", "100.0"))
+    max_pos   = min(hard_cap, cash_now * 0.10)
     min_conf  = float(os.getenv("MIN_CONFIDENCE", "0.25"))
     open_pos  = {p["token_id"] for p in storage.fetch_paper_positions()}
 
