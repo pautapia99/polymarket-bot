@@ -141,7 +141,7 @@ def generate_signals(save: bool = True) -> list[dict]:
         signals.append(sig)
 
         if save:
-            storage.insert_signal(
+            sig_id = storage.insert_signal(
                 asset         = asset,
                 slug          = sig["slug"],
                 outcome       = sig["outcome"],
@@ -154,6 +154,7 @@ def generate_signals(save: bool = True) -> list[dict]:
                 reason        = reason,
                 phase         = phase,
             )
+            sig["signal_id"] = sig_id
             log.info(
                 "Señal %s  conf=%.2f  token=%s  mercado=%s",
                 side, confidence, asset[:12],

@@ -40,34 +40,36 @@ from paper import PaperBroker
 log = logging.getLogger("autonomous_bot")
 
 AUTONOMOUS_INTERVAL = int(os.getenv("AUTONOMOUS_INTERVAL", "60"))
-TAKE_PROFIT_PCT     = float(os.getenv("TAKE_PROFIT_PCT", "0.20"))
-STOP_LOSS_PCT       = float(os.getenv("STOP_LOSS_PCT", "0.30"))
+TAKE_PROFIT_PCT     = float(os.getenv("TAKE_PROFIT_PCT", "0.25"))
+STOP_LOSS_PCT       = float(os.getenv("STOP_LOSS_PCT", "0.15"))
 
 
 # ── Helpers de precio ────────────────────────────────────────────────────────
 
-def _mid_price(client, token_id: str) -> float | None:
-    """Devuelve (bid+ask)/2 del orderbook, o None si no hay liquidez."""
+def _book_prices(client, token_id: str) -> tuple:
+    """Devuelve (bid, ask, mid) del orderbook, o (None, None, None) si no hay liquidez."""
     try:
         book = client.get_order_book(token_id)
         bid  = float(book.bids[-1].price) if book.bids else None
         ask  = float(book.asks[-1].price) if book.asks else None
-        if bid and ask:
-            return (bid + ask) / 2
-        return bid or ask
+        mid  = ((bid + ask) / 2) if (bid and ask) else (bid or ask)
+        return bid, ask, mid
     except Exception:
-        return None
+        return None, None, None
 
 
 # ── Órdenes paper ────────────────────────────────────────────────────────────
 
-def _paper_buy(broker: PaperBroker, token_id: str, price: float, usdc: float) -> bool:
+def _paper_buy(broker: PaperBroker, token_id: str, price: float, usdc: float,
+               signal_id: int | None = None) -> bool:
     fill = broker.execute(token_id, BUY, price, usdc)
     if fill:
         storage.record_order(
             token_id, "BUY", fill.avg_price, fill.shares, fill.notional,
             dry_run=True, status="PAPER",
         )
+        if signal_id is not None:
+            storage.mark_signal_acted(signal_id)
         log.info(
             "COMPRA PAPER: %.4f shares @ %.4f (%.2f USDC) token=%s",
             fill.shares, fill.avg_price, fill.notional, token_id[:12],
@@ -77,7 +79,7 @@ def _paper_buy(broker: PaperBroker, token_id: str, price: float, usdc: float) ->
 
 
 def _paper_sell(broker: PaperBroker, token_id: str, price: float, usdc: float,
-                reason: str = "") -> bool:
+                reason: str = "", entry_price: float | None = None) -> bool:
     fill = broker.execute(token_id, SELL, price, usdc)
     if fill:
         storage.record_order(
@@ -85,6 +87,12 @@ def _paper_sell(broker: PaperBroker, token_id: str, price: float, usdc: float,
             dry_run=True, status="PAPER",
             response=f"realized={fill.realized:.4f}  {reason}",
         )
+        # Cerrar la señal abierta para este token (feedback loop)
+        open_sig = storage.get_open_signal_for_token(token_id)
+        if open_sig:
+            ref_price = entry_price or open_sig["avg_price"]
+            pnl_pct = (fill.avg_price - ref_price) / ref_price if ref_price > 0 else 0.0
+            storage.update_signal_outcome(open_sig["id"], fill.avg_price, round(pnl_pct, 4))
         log.info(
             "VENTA PAPER [%s]: %.4f shares @ %.4f  realizado=%.4f USDC  token=%s",
             reason, fill.shares, fill.avg_price, fill.realized, token_id[:12],
@@ -98,8 +106,9 @@ def _paper_sell(broker: PaperBroker, token_id: str, price: float, usdc: float,
 def manage_positions(client, broker: PaperBroker) -> None:
     """
     Revisa todas las posiciones abiertas y cierra si:
-      - precio >= entry * (1 + TAKE_PROFIT_PCT)  → take profit
-      - precio <= entry * (1 - STOP_LOSS_PCT)    → stop loss
+      - bid >= entry * (1 + TAKE_PROFIT_PCT)  → take profit
+      - bid <= entry * (1 - STOP_LOSS_PCT)    → stop loss
+    Usa el bid para vender (precio real al que se puede vender).
     """
     positions = storage.fetch_paper_positions()
     for pos in positions:
@@ -110,25 +119,25 @@ def manage_positions(client, broker: PaperBroker) -> None:
             continue
 
         avg_entry = cost_basis / shares
-        current   = _mid_price(client, token_id)
-        if current is None:
+        bid, _, _ = _book_prices(client, token_id)
+        if bid is None:
             continue
 
-        chg = (current - avg_entry) / avg_entry
+        chg = (bid - avg_entry) / avg_entry
 
         if chg >= TAKE_PROFIT_PCT:
             log.info(
-                "TAKE PROFIT  token=%s  entry=%.3f  now=%.3f  (+%.1f%%)",
-                token_id[:12], avg_entry, current, chg * 100,
+                "TAKE PROFIT  token=%s  entry=%.3f  bid=%.3f  (+%.1f%%)",
+                token_id[:12], avg_entry, bid, chg * 100,
             )
-            _paper_sell(broker, token_id, current, shares * current, "TAKE_PROFIT")
+            _paper_sell(broker, token_id, bid, shares * bid, "TAKE_PROFIT", avg_entry)
 
         elif chg <= -STOP_LOSS_PCT:
             log.info(
-                "STOP LOSS    token=%s  entry=%.3f  now=%.3f  (%.1f%%)",
-                token_id[:12], avg_entry, current, chg * 100,
+                "STOP LOSS    token=%s  entry=%.3f  bid=%.3f  (%.1f%%)",
+                token_id[:12], avg_entry, bid, chg * 100,
             )
-            _paper_sell(broker, token_id, current, shares * current, "STOP_LOSS")
+            _paper_sell(broker, token_id, bid, shares * bid, "STOP_LOSS", avg_entry)
 
 
 # ── Actuar sobre señales ─────────────────────────────────────────────────────
@@ -141,11 +150,11 @@ def act_on_signals(client, broker: PaperBroker, cfg: Config) -> None:
         log.info("Sin señales nuevas este ciclo.")
         return
 
-    # Máximo por operación: el menor entre MAX_POSITION_USDC y el 10% del cash
+    # Máximo por operación: el menor entre MAX_POSITION_USDC y el 5% del cash
     # disponible. Así nunca se queda sin dinero por una sola compra.
     cash_now  = broker.cash()
     hard_cap  = float(os.getenv("MAX_POSITION_USDC", "100.0"))
-    max_pos   = min(hard_cap, cash_now * 0.10)
+    max_pos   = min(hard_cap, cash_now * 0.05)
     min_conf  = float(os.getenv("MIN_CONFIDENCE", "0.25"))
     open_pos  = {p["token_id"] for p in storage.fetch_paper_positions()}
 
@@ -153,6 +162,7 @@ def act_on_signals(client, broker: PaperBroker, cfg: Config) -> None:
         token_id   = sig["asset"]
         confidence = sig["confidence"]
         side       = sig["side"]
+        signal_id  = sig.get("signal_id")
 
         if confidence < min_conf:
             continue
@@ -165,29 +175,32 @@ def act_on_signals(client, broker: PaperBroker, cfg: Config) -> None:
                 log.info("Ya tenemos posición en %s – ignorando BUY.", token_id[:12])
                 continue
 
-            current = _mid_price(client, token_id)
-            if current is None:
-                log.warning("Sin precio para %s, saltando.", token_id[:12])
+            # Compramos al ASK (precio real al que el mercado vende)
+            bid, ask, _ = _book_prices(client, token_id)
+            if ask is None:
+                log.warning("Sin ask para %s, saltando.", token_id[:12])
                 continue
 
             log.info(
-                "SEÑAL BUY  conf=%.2f  token=%s  precio=%.3f  size=%.1f$  │ %s",
-                confidence, token_id[:12], current, size_usdc, sig["reason"],
+                "SEÑAL BUY  conf=%.2f  token=%s  ask=%.3f  size=%.1f$  │ %s",
+                confidence, token_id[:12], ask, size_usdc, sig["reason"],
             )
-            if _paper_buy(broker, token_id, current, size_usdc):
+            if _paper_buy(broker, token_id, ask, size_usdc, signal_id):
                 open_pos.add(token_id)
 
         elif side == "SELL" and token_id in open_pos:
-            current = _mid_price(client, token_id)
-            if current is None:
+            # Vendemos al BID (precio real al que el mercado compra)
+            bid, _, _ = _book_prices(client, token_id)
+            if bid is None:
                 continue
 
             log.info(
-                "SEÑAL SELL conf=%.2f  token=%s  precio=%.3f  │ %s",
-                confidence, token_id[:12], current, sig["reason"],
+                "SEÑAL SELL conf=%.2f  token=%s  bid=%.3f  │ %s",
+                confidence, token_id[:12], bid, sig["reason"],
             )
-            shares, _ = storage.get_paper_position(token_id)
-            _paper_sell(broker, token_id, current, shares * current, "SIGNAL")
+            shares, cost = storage.get_paper_position(token_id)
+            entry = (cost / shares) if shares > 0 else None
+            _paper_sell(broker, token_id, bid, shares * bid, "SIGNAL", entry)
             open_pos.discard(token_id)
 
 

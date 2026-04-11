@@ -481,6 +481,18 @@ def get_recent_tracked_trades_since(cutoff_ts: float) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_open_signal_for_token(token_id: str) -> dict | None:
+    """Devuelve la señal BUY actuada más reciente sin resultado para un token."""
+    with _conn() as con:
+        row = con.execute(
+            """SELECT * FROM signals
+               WHERE asset=? AND acted=1 AND pnl_pct IS NULL AND side='BUY'
+               ORDER BY ts DESC LIMIT 1""",
+            (token_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def fetch_recent_signals(limit: int = 20) -> list[dict]:
     with _conn() as con:
         rows = con.execute(
